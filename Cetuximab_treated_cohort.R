@@ -1,30 +1,23 @@
-
-## LOAD PACKAGES
-
-{
-  library(Seurat)
-  library(SingleCellExperiment)
-  library(Matrix.utils)
-  library(data.table)
-  library(base)
-  library(TxDb.Hsapiens.UCSC.hg19.knownGene)
-  library(org.Hs.eg.db)
-  library(DGEobj.utils)
-  library(plotly)
-  library(pheatmap)
-  library(corrplot)
-  library(viridis)
-  library(corto)
-  library(DESeq2)
-  library(SeuratObject)
-  library(openxlsx)
-  library(dplyr)
-  library(EPIC)
-  library(CMSclassifier)
- 
-  
-}
-
+# 1.Cargar los paquetes necesarios
+library(Seurat)
+library(SingleCellExperiment)
+library(Matrix.utils)
+library(data.table)
+library(base)
+library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+library(org.Hs.eg.db)
+library(DGEobj.utils)
+library(plotly)
+library(pheatmap)
+library(corrplot)
+library(viridis)
+library(corto)
+library(DESeq2)
+library(SeuratObject)
+library(openxlsx)
+library(dplyr)
+library(EPIC)
+library(CMSclassifier)
 library(janitor)
 library(ggpubr)
 library(ggplot2)
@@ -34,8 +27,7 @@ library(GEOquery)
 library(biomaRt)
 library('org.Hs.eg.db')
 
-#1. Descargar datos de expresión de GEO 
-
+# 2.Descargar los datos de expresión de GEO 
 library(GEOquery)
 data <- getGEO("gse5851", GSEMatrix=T)
 expr_gse5851<-exprs(data[[1]])
