@@ -90,13 +90,13 @@ clinical_clean <- subset(clinical_wt, DCG %in% c("R", "NR"))
 #Passem a logaritmo los valores de expresión
 expr_log2 <- log2(data_gene_collapse + 1)
 
-#Submatriu de expresión con las muestras seleccionadas
+#Submatriz de expresión con las muestras seleccionadas
 expr_matrix <- expr_log2[, clinical_clean$GSE5851]
 
 #Comprovar que las columnas de la matriz y las filas del metadata coincidan
 all(colnames(expr_matrix) == clinical_clean$GSE5851)  # tiene que salir TRUE
 
-#2. Crea el diseño del modelo y ajusta el análisis con limma
+#2. Crear el diseño del modelo y ajustar el análisis con limma
 #Define la condición de respuesta
 group <- factor(clinical_clean$DCG, levels = c("NR", "R"))  # 'NR' como referencia
 
