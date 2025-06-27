@@ -1,0 +1,245 @@
+##########EXPRESIÓN DE LAS SIGNATURAS EN LAS DIFERENTES COHORTES
+##### Preparar cohortes: 
+# 1. Instalar y cargar paquetes necesarios
+if (!requireNamespace("BiocManager", quietly=TRUE)) install.packages("BiocManager")
+BiocManager::install(c("GEOquery","GSVA","survival","survminer"))
+
+library(GEOquery)
+library(GSVA)
+library(survival)
+library(survminer)
+
+
+# 2. Descargar datos de GEO
+gse <- getGEO("GSE39582", GSEMatrix = TRUE, AnnotGPL = TRUE)  # Descargar expression y clinical
+exprSet <- gse[[1]]  # Primer ExpressionSet
+
+# 3. Extraer matriz de expresión (genes x muestras), ya normalizada
+expr <- exprs(exprSet)
+
+# 4. Extraer datos clínicos i quedarte solo con los pacientes de estadio 4 (metastaticos)
+clinical <- pData(exprSet)
+clinical_stage4 <- clinical[grep("tnm.stage: 4", tolower(clinical$characteristics_ch1.4)), ]
+table(clinical$characteristics_ch1.4)
+clinical_stage4_clean <- clinical_stage4[!is.na(clinical_stage4$characteristics_ch1.14) &
+                                           !is.na(clinical_stage4$characteristics_ch1.13), ]
+
+#5. Extreure el temps en mesos com a valor numèric (Overall survival)
+clinical$survival_time <- as.numeric(gsub("os.delay \\(months\\): ", "", clinical$characteristics_ch1.14))
+
+#6. Extreure l'event de supervivència com a valor numèric (0 = viu, 1 = mort) (Overall survival)
+clinical$survival_status <- as.numeric(gsub(".*: ", "", clinical$characteristics_ch1.13))
+
+#7. Solo las muestras con datos transcrpitomicos
+samples_with_expression <- intersect(rownames(clinical_stage4_clean), colnames(expr))
+expr_stage4_clean <- expr[, samples_with_expression]
+clinical_stage4_clean <- clinical_stage4_clean[samples_with_expression, ]
+
+
+#8. conevertir el RFS (evento y tiempo) en numerico
+colnames(clinical_stage4_clean)[23] <- "event"
+colnames(clinical_stage4_clean)[24] <- "time"
+clinical_stage4_clean$event <- as.numeric(gsub("os.event:", "", clinical_stage4_clean$event))
+clinical_stage4_clean$time <- as.numeric(gsub("os.delay \\(months\\):", "", clinical_stage4_clean$time))
+
+#9. Cambiar los nombres de las sondas con el gen correspondiente
+platform <- annotation(gse[[1]])
+print(platform)    #para saber la plataforma del dataset (GPL570)
+
+# cargamos la anotacion de la plataforma (GPL570)
+if (!requireNamespace("hgu133plus2.db", quietly=TRUE))
+  BiocManager::install("hgu133plus2.db")
+library(hgu133plus2.db)
+
+# Mapping de sonda a gene symbol
+probe2gene <- toTable(hgu133plus2SYMBOL)
+expr <- exprs(exprSet)
+head(probe2gene)
+
+# comprovaciones
+head(rownames(expr))
+head(probe2gene$probe_id)
+
+probe2gene_filtered <- probe2gene[probe2gene$probe_id %in% rownames(expr), ]
+
+# hacemos el merge
+expr_annot <- expr[probe2gene_filtered$probe_id, ]
+rownames(expr_annot) <- probe2gene_filtered$symbol
+
+# colapsar sondas duplicadas haciendo promedio del gen
+expr_collapsed <- aggregate(expr_annot, by = list(Gene = rownames(expr_annot)), FUN = mean)
+rownames(expr_collapsed) <- expr_collapsed$Gene
+expr_collapsed <- expr_collapsed[, -1]  # Elimina columna "Gene" duplicada
+
+
+#10. Juntar los datos clinicos con los datos de transcriptomica
+
+# Transposa la matriu
+expr_collapsed_t <- t(expr_collapsed)
+
+# Converteix-la a data.frame
+expr_collapsed_t <- as.data.frame(expr_collapsed_t)
+
+#Convertimos en numérico
+expr_collapsed_t[] <- lapply(expr_collapsed_t, function(x) as.numeric(as.character(x)))
+
+#comprovaciones
+head(colMeans(expr_collapsed_t, na.rm = TRUE))
+
+
+#Ya podemos juntar los datos clínicos con los transcriptomicos
+#merged_data<-merge(clinical_stage4_clean,expr_collapsed_t,by="row.names")
+
+#9. Calcular els scores (ssGSEA) - RESPONDERS
+
+#carregues el CSV amb la signatura
+Responders_signature <- read.csv("signature_responders.csv", header = FALSE)
+
+# extreus els noms dels gens com un vector
+Responders_signature <- Responders_signature[[1]]
+
+#Comences Corto (paquet per fer el ssgsea)
+
+library(corto)
+expr<-expr_collapsed_t
+ssgsea_responders <- ssgsea(as.data.frame(t(expr)),list(Responders_signature))
+colnames(ssgsea_responders)<-row.names(expr)
+ssgsea_responders<-as.data.frame(t(ssgsea_responders))
+colnames(ssgsea_responders)<-"Responders_signature"
+
+
+#comprovacions
+head(Responders_signature)
+length(Responders_signature)
+
+
+
+#juntes les dades cliniques amb el valor de la signatura dels responders
+Responders_data<-merge(clinical_stage4_clean,ssgsea_responders,by="row.names")
+
+
+
+#executes aq funcio que serveix per definir un cutoff entre alta i baixa expressio d'aq signatura
+library(survminer)
+cutoff<-surv_cutpoint(Responders_data,time="time",event="event",
+                      variables=c("Responders_signature"))
+
+#poses els pacients segons si son categoria high or low i ho converteixes a factor
+
+cat<-surv_categorize(cutoff)
+
+cat$Responders_signature<-factor(cat$Responders_signature,levels=c("low","high"))
+
+#aixo es per saber quants en tens de high i de low
+low=paste("Low"," ","(n = ",nrow(cat[cat$Responders_signature=="low",]),")",sep="")
+high=paste("High"," ","(n = ",nrow(cat[cat$Responders_signature=="high",]),")",sep="")
+
+
+#aq es el codi per fer la figura de DFS (Disease Free Survival)
+
+library(survival)
+p<-ggpar(
+  ggsurvplot((surv_fit(Surv(time,event)~Responders_signature,data=cat)),
+             data=cat,risk.table=F,conf.int=F,pval=F,legend.labs=c(low,high),
+             surv.scale="percent",
+             censor.shape=124,censor.size=2,conf.int.style="ribbon",conf.int.alpha=0.1,
+             palette=c("blue","red"), legend.title="Responders signature",legend=c(0.85,0.15),
+             xlab="Time (Months)",ylab="Progression-free survival",
+             test.for.trend=F,ggtheme=theme_pubclean()),
+  font.x=c(16,"bold","black"),
+  font.y=c(16,"bold","black"),
+  font.legend=c(14,"black"),
+  font.tickslab = c(14,"black"))
+
+#aq es el codi per saber els estadistics
+
+coxph(Surv(time,event)~Responders_signature,data=cat)
+coxph(Surv(time,event)~Responders_signature,data=cat)%>%gtsummary::tbl_regression(exp=T)
+
+
+
+#aq codi es per afegir els estadistics a la imatge: AL LORO PERQUE HO HAS DE COPIAR MANUALMENT
+p$plot + ggplot2::annotate("text", 
+                           x = -5, y = 0.125, # x and y coordinates of the text
+                           label = "High vs Low = 0.6226 [0.33, 1.16]\r\npv = 0.14\r\nLRT-pv = 0.1379", size = 5,hjust=0)
+
+
+##La signatura con los genes sobreexpresados en los pacientes que responden al tratamineto con cetuximab,
+#     no esta relacionada con un mejor o peor prognostico, ya que la alta expressión de estos genes
+#     no da mejor pronostico que la baja expresión
+#     (ES MÁS O MENOS UN RESUMEN DE COMO INTERPRETO YO ESTOS RESULTADOS)
+#
+
+
+
+
+#9. Calcular els scores (ssGSEA) - NON-RESPONDERS
+
+#carregues el CSV amb la signatura
+
+NONResponders_signature <- read.csv("signature_nonresponders.csv", header = FALSE)
+
+
+# extreus els noms dels gens com un vector
+NONResponders_signature <- NONResponders_signature[[1]]
+
+#Comences Corto (paquet per fer el ssgsea)
+
+library(corto)
+expr<-expr_collapsed_t
+ssgsea_nonresponders <- ssgsea(as.data.frame(t(expr)),list(NONResponders_signature))
+colnames(ssgsea_nonresponders)<-row.names(expr)
+ssgsea_nonresponders<-as.data.frame(t(ssgsea_nonresponders))
+colnames(ssgsea_nonresponders)<-"nonResponders_signature"
+
+
+#juntes les dades cliniques amb el valor de la signatura dels responders
+NONResponders_data<-merge(clinical_stage4_clean,ssgsea_nonresponders,by="row.names")
+
+
+
+#executes aq funcio que serveix per definir un cutoff entre alta i baixa expressio d'aq signatura
+library(survminer)
+cutoff<-surv_cutpoint(NONResponders_data,time="time",event="event",
+                      variables=c("nonResponders_signature"))
+
+#poses els pacients segons si son categoria high or low i ho converteixes a factor
+cat<-surv_categorize(cutoff)
+cat$nonResponders_signature<-factor(cat$nonResponders_signature,levels=c("low","high"))
+
+#aixo es per saber quants en tens de high i de low
+low=paste("Low"," ","(n = ",nrow(cat[cat$nonResponders_signature=="low",]),")",sep="")
+high=paste("High"," ","(n = ",nrow(cat[cat$nonResponders_signature=="high",]),")",sep="")
+
+#aq es el codi per fer la figura de DFS (Disease Free Survival)
+
+library(survival)
+p<-ggpar(
+  ggsurvplot((surv_fit(Surv(time,event)~nonResponders_signature,data=cat)),
+             data=cat,risk.table=F,conf.int=F,pval=F,legend.labs=c(low,high),
+             surv.scale="percent",
+             censor.shape=124,censor.size=2,conf.int.style="ribbon",conf.int.alpha=0.1,
+             palette=c("blue","red"), legend.title="nonResponders signature",legend=c(0.85,0.15),
+             xlab="Time (Months)",ylab="Progression-free survival",
+             test.for.trend=F,ggtheme=theme_pubclean()),
+  font.x=c(16,"bold","black"),
+  font.y=c(16,"bold","black"),
+  font.legend=c(14,"black"),
+  font.tickslab = c(14,"black"))
+
+#aq es el codi per saber els estadistics
+
+coxph(Surv(time,event)~nonResponders_signature,data=cat)
+coxph(Surv(time,event)~nonResponders_signature,data=cat)%>%gtsummary::tbl_regression(exp=T)
+
+
+#aq codi es per afegir els estadistics a la imatge: AL LORO PERQUE HO HAS DE COPIAR MANUALMENT
+p$plot + ggplot2::annotate("text", 
+                           x = -5, y = 0.125, # x and y coordinates of the text
+                           label = "High vs Low = 2.29 [1.13, 4.62]\r\npv = 0.021\r\nLRT-pv = 0.0209", size = 5,hjust=0)
+
+
+
+###OLE Y OLE Y OLE! Esta signatura sí que esta relacionada con mal pronostico, es decir una alta expresion de los genes
+#     sobreexpresados en los no responders a la terapia de cetuximab, da mal pronostico en otra cohorte
+#     de pacientes colorectales de estadio 4.
